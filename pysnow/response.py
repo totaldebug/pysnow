@@ -11,12 +11,12 @@ from .exceptions import (
     MultipleResults,
     EmptyContent,
     MissingResult,
+    UnexpectedResponseFormat,
 )
 
 
 class Response(object):
     """Takes a :class:`requests.Response` object and performs deserialization and validation.
-
     :param response: :class:`requests.Response` object
     :param resource: parent :class:`resource.Resource` object
     :param chunk_size: Read and return up to this size (in bytes) in the stream parser
@@ -57,7 +57,6 @@ class Response(object):
     def _parse_response(self):
         """Looks for `result.item` (array), `result` (object) and `error` (object) keys and parses
         the raw response content (stream of bytes)
-
         :raise:
             - ResponseError: If there's an error in the response
             - MissingResult: If no result nor error was found
@@ -71,45 +70,48 @@ class Response(object):
 
         builder = ObjectBuilder()
 
-        for prefix, event, value in ijson.parse(
-            response.raw, buf_size=self._chunk_size
-        ):
-            if (prefix, event) == ("error", "start_map"):
-                # Matched ServiceNow `error` object at the root
-                has_error = True
-            elif prefix == "result" and event in ["start_map", "start_array"]:
-                # Matched ServiceNow `result`
-                if event == "start_map":  # Matched object
-                    has_result_single = True
-                elif event == "start_array":  # Matched array
-                    has_result_many = True
+        try:
+            for prefix, event, value in ijson.parse(
+                response.raw, buf_size=self._chunk_size
+            ):
+                if (prefix, event) == ("error", "start_map"):
+                    # Matched ServiceNow `error` object at the root
+                    has_error = True
+                elif prefix == "result" and event in ["start_map", "start_array"]:
+                    # Matched ServiceNow `result`
+                    if event == "start_map":  # Matched object
+                        has_result_single = True
+                    elif event == "start_array":  # Matched array
+                        has_result_many = True
 
-            if has_result_many:
-                # Build the result
-                if (prefix, event) == ("result.item", "end_map"):
-                    # Reached end of object. Set count and yield
-                    builder.event(event, value)
-                    self.count += 1
-                    yield getattr(builder, "value")
-                elif prefix.startswith("result.item"):
-                    # Build the result object
-                    builder.event(event, value)
-            elif has_result_single:
-                if (prefix, event) == ("result", "end_map"):
-                    # Reached end of the result object. Set count and yield.
-                    builder.event(event, value)
-                    self.count += 1
-                    yield getattr(builder, "value")
-                elif prefix.startswith("result"):
-                    # Build the error object
-                    builder.event(event, value)
-            elif has_error:
-                if (prefix, event) == ("error", "end_map"):
-                    # Reached end of the error object - raise ResponseError exception
-                    raise ResponseError(getattr(builder, "value"))
-                elif prefix.startswith("error"):
-                    # Build the error object
-                    builder.event(event, value)
+                if has_result_many:
+                    # Build the result
+                    if (prefix, event) == ("result.item", "end_map"):
+                        # Reached end of object. Set count and yield
+                        builder.event(event, value)
+                        self.count += 1
+                        yield getattr(builder, "value")
+                    elif prefix.startswith("result.item"):
+                        # Build the result object
+                        builder.event(event, value)
+                elif has_result_single:
+                    if (prefix, event) == ("result", "end_map"):
+                        # Reached end of the result object. Set count and yield.
+                        builder.event(event, value)
+                        self.count += 1
+                        yield getattr(builder, "value")
+                    elif prefix.startswith("result"):
+                        # Build the error object
+                        builder.event(event, value)
+                elif has_error:
+                    if (prefix, event) == ("error", "end_map"):
+                        # Reached end of the error object - raise ResponseError exception
+                        raise ResponseError(getattr(builder, "value"))
+                    elif prefix.startswith("error"):
+                        # Build the error object
+                        builder.event(event, value)
+        except ijson.backends.python.UnexpectedSymbol:
+            raise UnexpectedResponseFormat('Broken response from servicenow instance - is it alive?')
 
         if (has_result_single or has_result_many) and self.count == 0:  # Results empty
             return
@@ -139,7 +141,6 @@ class Response(object):
 
     def _get_streamed_response(self):
         """Parses byte stream (memory efficient)
-
         :return: Parsed JSON
         """
 
@@ -147,7 +148,6 @@ class Response(object):
 
     def _get_buffered_response(self):
         """Returns a buffered response
-
         :return: Buffered response
         """
 
@@ -175,7 +175,6 @@ class Response(object):
 
     def all(self):
         """Returns a chained generator response containing all matching records
-
         :return:
             - Iterable response
         """
@@ -187,10 +186,8 @@ class Response(object):
 
     def first(self):
         """Return the first record or raise an exception if the result doesn't contain any data
-
         :return:
             - Dictionary containing the first item in the response content
-
         :raise:
             - NoResults: If no results were found
         """
@@ -207,7 +204,6 @@ class Response(object):
 
     def first_or_none(self):
         """Return the first record or None
-
         :return:
             - Dictionary containing the first item or None
         """
@@ -219,10 +215,8 @@ class Response(object):
 
     def one(self):
         """Return exactly one record or raise an exception.
-
         :return:
             - Dictionary containing the only item in the response content
-
         :raise:
             - MultipleResults: If more than one records are present in the content
             - NoResults: If the result is empty
@@ -239,10 +233,8 @@ class Response(object):
 
     def one_or_none(self):
         """Return at most one record or raise an exception.
-
         :return:
             - Dictionary containing the matching record or None
-
         :raise:
             - MultipleResults: If more than one records are present in the content
         """
@@ -254,7 +246,6 @@ class Response(object):
 
     def update(self, payload):
         """Convenience method for updating a fetched record
-
         :param payload: update payload
         :return: update response object
         """
@@ -263,7 +254,6 @@ class Response(object):
 
     def delete(self):
         """Convenience method for deleting a fetched record
-
         :return: delete response object
         """
 
@@ -271,7 +261,6 @@ class Response(object):
 
     def upload(self, *args, **kwargs):
         """Convenience method for attaching files to a fetched record
-
         :param args: args to pass along to `Attachment.upload`
         :param kwargs: kwargs to pass along to `Attachment.upload`
         :return: upload response object
